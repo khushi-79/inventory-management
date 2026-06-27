@@ -1,0 +1,21 @@
+# Root workspace
+node_modules/
+
+# Env secrets — NEVER commit
+**/.env
+**/.env.local
+**/.env.*.local
+
+# Build artefacts
+**/dist/
+**/build/
+
+# Generated
+**/generated/
+
+# Logs
+**/*.log
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,327 @@
+// =============================================================================
+// Prisma Schema — B2B Inventory & Ordering System
+// =============================================================================
+// Database: PostgreSQL
+// Generator: prisma-client-js (standard Prisma JS/TS client)
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum Role {
+  SUPER_ADMIN
+  STAFF
+  CUSTOMER
+}
+
+enum OrderStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  PROCESSING
+  DISPATCHED
+  DELIVERED
+  CANCELLED
+}
+
+enum LedgerEntryType {
+  DEBIT
+  CREDIT
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  INVENTORY_ADJUST
+  ORDER_STATUS_CHANGE
+  INVOICE_GENERATE
+}
+
+// =============================================================================
+// USERS
+// Purpose: Authentication credentials and role assignment for all principals.
+// =============================================================================
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String   @db.VarChar(255)
+  email        String   @unique @db.VarChar(255)
+  phone        String?  @db.VarChar(20)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  role         Role     @default(CUSTOMER)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  customer         Customer?      @relation("UserToCustomer")
+  createdOrders    Order[]        @relation("OrderCreatedBy")
+  assignedCustomers Customer[]   @relation("StaffAssignment")
+  auditLogs        AuditLog[]
+
+  @@map("users")
+}
+
+// =============================================================================
+// CUSTOMERS
+// Purpose: B2B dealer/buyer business profiles linked to a User login.
+// =============================================================================
+
+model Customer {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @unique @map("user_id") @db.Uuid
+  companyName     String   @map("company_name") @db.VarChar(255)
+  billingAddress  String   @map("billing_address") @db.Text
+  shippingAddress String   @map("shipping_address") @db.Text
+  gstNumber       String?  @map("gst_number") @db.VarChar(15)
+  creditLimit     Decimal  @default(0.00) @map("credit_limit") @db.Decimal(12, 2)
+  currentDueBalance Decimal @default(0.00) @map("current_due_balance") @db.Decimal(12, 2)
+  assignedStaffId String?  @map("assigned_staff_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  user          User          @relation("UserToCustomer", fields: [userId], references: [id], onDelete: Cascade)
+  assignedStaff User?         @relation("StaffAssignment", fields: [assignedStaffId], references: [id], onDelete: SetNull)
+  orders        Order[]
+  ledgerEntries LedgerEntry[]
+  invoices      Invoice[]
+
+  @@index([assignedStaffId], name: "idx_customers_assigned_staff_id")
+  @@map("customers")
+}
+
+// =============================================================================
+// PRODUCTS
+// Purpose: Parent product definitions (e.g., "D-Handle Model 204").
+// =============================================================================
+
+model Product {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @db.VarChar(255)
+  description String?  @db.Text
+  category    String   @db.VarChar(100)
+  imageUrl    String?  @map("image_url") @db.VarChar(512)
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  variants ProductVariant[]
+
+  @@index([category], name: "idx_products_category")
+  @@map("products")
+}
+
+// =============================================================================
+// PRODUCT VARIANTS
+// Purpose: Exact purchasable SKUs — specific Size + Finish combinations.
+// =============================================================================
+
+model ProductVariant {
+  id         String  @id @default(uuid()) @db.Uuid
+  productId  String  @map("product_id") @db.Uuid
+  sku        String  @unique @db.VarChar(100)
+  size       String  @db.VarChar(50)
+  finish     String  @db.VarChar(50)
+  unitPrice  Decimal @map("unit_price") @db.Decimal(10, 2)
+  boxPackQty Int     @default(1) @map("box_pack_qty")
+  isActive   Boolean @default(true) @map("is_active")
+  /// Optimistic concurrency version — incremented on every price/attribute update.
+  version    BigInt  @default(1)
+
+  // Relations
+  product    Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  inventory  Inventory?
+  orderItems OrderItem[]
+
+  @@index([productId], name: "idx_variants_product_id")
+  @@map("product_variants")
+}
+
+// =============================================================================
+// INVENTORY
+// Purpose: Stock levels per variant. Single source of truth for ATP calculation.
+//
+// Available Stock = physicalStock - reservedStock
+// =============================================================================
+
+model Inventory {
+  id                String   @id @default(uuid()) @db.Uuid
+  variantId         String   @unique @map("variant_id") @db.Uuid
+  physicalStock     Int      @default(0) @map("physical_stock")
+  reservedStock     Int      @default(0) @map("reserved_stock")
+  warehouseLocation String?  @map("warehouse_location") @db.VarChar(100)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@map("inventory")
+}
+
+// =============================================================================
+// ORDERS
+// Purpose: Sales order header record.
+// =============================================================================
+
+model Order {
+  id              String      @id @default(uuid()) @db.Uuid
+  orderNumber     String      @unique @map("order_number") @db.VarChar(50)
+  customerId      String      @map("customer_id") @db.Uuid
+  createdBy       String      @map("created_by") @db.Uuid
+  status          OrderStatus @default(DRAFT)
+  totalAmount     Decimal     @map("total_amount") @db.Decimal(12, 2)
+  paymentTerms    String      @default("Credit") @map("payment_terms") @db.VarChar(100)
+  notes           String?     @db.Text
+  /// UUID generated on the mobile device to prevent duplicate sync submissions.
+  offlineClientId String?     @unique @map("offline_client_id") @db.Uuid
+  createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime    @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  customer   Customer    @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  creator    User        @relation("OrderCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
+  items      OrderItem[]
+  dispatches Dispatch[]
+  invoice    Invoice?
+
+  @@index([customerId], name: "idx_orders_customer_id")
+  @@index([status, createdAt(sort: Desc)], name: "idx_orders_status_created")
+  @@map("orders")
+}
+
+// =============================================================================
+// ORDER ITEMS
+// Purpose: Individual line items in an order; tracks allocated vs backordered qty.
+// =============================================================================
+
+model OrderItem {
+  id                String  @id @default(uuid()) @db.Uuid
+  orderId           String  @map("order_id") @db.Uuid
+  variantId         String  @map("variant_id") @db.Uuid
+  quantity          Int
+  unitPrice         Decimal @map("unit_price") @db.Decimal(10, 2)
+  /// Quantity successfully allocated from physical stock at order time.
+  allocatedQuantity Int     @default(0) @map("allocated_quantity")
+  /// Quantity placed into backorder due to insufficient stock.
+  backorderQuantity Int     @default(0) @map("backorder_quantity")
+
+  // Relations
+  order   Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  @@index([orderId], name: "idx_order_items_order_id")
+  @@map("order_items")
+}
+
+// =============================================================================
+// DISPATCHES
+// Purpose: Tracks physical dispatch of goods against an approved order.
+// =============================================================================
+
+model Dispatch {
+  id              String   @id @default(uuid()) @db.Uuid
+  orderId         String   @map("order_id") @db.Uuid
+  dispatchedAt    DateTime @default(now()) @map("dispatched_at") @db.Timestamptz
+  deliveredAt     DateTime? @map("delivered_at") @db.Timestamptz
+  trackingNumber  String?  @map("tracking_number") @db.VarChar(100)
+  transporterName String?  @map("transporter_name") @db.VarChar(255)
+  notes           String?  @db.Text
+
+  // Relations
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([orderId], name: "idx_dispatches_order_id")
+  @@map("dispatches")
+}
+
+// =============================================================================
+// INVOICES
+// Purpose: Tax invoice linked to a delivered order; stores the PDF S3 URL.
+// =============================================================================
+
+model Invoice {
+  id            String   @id @default(uuid()) @db.Uuid
+  invoiceNumber String   @unique @map("invoice_number") @db.VarChar(50)
+  orderId       String   @unique @map("order_id") @db.Uuid
+  customerId    String   @map("customer_id") @db.Uuid
+  taxableValue  Decimal  @map("taxable_value") @db.Decimal(12, 2)
+  gstValue      Decimal  @map("gst_value") @db.Decimal(12, 2)
+  totalAmount   Decimal  @map("total_amount") @db.Decimal(12, 2)
+  pdfStorageUrl String?  @map("pdf_storage_url") @db.VarChar(512)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  order         Order         @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  customer      Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  ledgerEntries LedgerEntry[]
+
+  @@index([customerId], name: "idx_invoices_customer_id")
+  @@map("invoices")
+}
+
+// =============================================================================
+// LEDGER ENTRIES
+// Purpose: Double-entry financial log. Running balance maintained per entry.
+//
+// Outstanding Balance = SUM(DEBIT amounts) - SUM(CREDIT amounts)
+// =============================================================================
+
+model LedgerEntry {
+  id               String          @id @default(uuid()) @db.Uuid
+  customerId       String          @map("customer_id") @db.Uuid
+  entryDate        DateTime        @default(now()) @map("entry_date") @db.Timestamptz
+  entryType        LedgerEntryType @map("entry_type")
+  referenceInvoiceId String?       @map("reference_invoice_id") @db.Uuid
+  amount           Decimal         @db.Decimal(12, 2)
+  /// Running balance of the customer's account after this entry.
+  runningBalance   Decimal         @map("running_balance") @db.Decimal(12, 2)
+  description      String?         @db.Text
+
+  // Relations
+  customer Customer  @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  invoice  Invoice?  @relation(fields: [referenceInvoiceId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, entryDate(sort: Desc)], name: "idx_ledger_customer_date")
+  @@map("ledger_entries")
+}
+
+// =============================================================================
+// AUDIT LOGS
+// Purpose: Immutable append-only record of all meaningful system mutations.
+//          No UPDATE or DELETE operations are ever performed on this table.
+// =============================================================================
+
+model AuditLog {
+  id         BigInt      @id @default(autoincrement())
+  userId     String      @map("user_id") @db.Uuid
+  action     AuditAction
+  tableName  String      @map("table_name") @db.VarChar(100)
+  recordId   String      @map("record_id") @db.Uuid
+  oldValues  Json?       @map("old_values")
+  newValues  Json?       @map("new_values")
+  ipAddress  String?     @map("ip_address") @db.VarChar(45)
+  createdAt  DateTime    @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId], name: "idx_audit_user_id")
+  @@index([tableName, recordId], name: "idx_audit_table_record")
+  @@index([createdAt(sort: Desc)], name: "idx_audit_created_at")
+  @@map("audit_logs")
+}
