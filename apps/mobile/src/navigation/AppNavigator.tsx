@@ -98,16 +98,27 @@ function AppTabNavigator(): React.JSX.Element {
 /**
  * AppNavigator — Root navigation controller.
  *
- * Reads isAuthenticated() from the auth store to decide whether to render
- * the Auth flow or the main App tab flow. No explicit redirect logic needed —
- * React Navigation re-renders automatically when the store value changes.
+ * DEV_SHOW_TABS: Bypasses auth check in development so you can preview
+ * all tab screens without logging in. Set to false to test the login flow.
+ * This constant is REMOVED in Sprint 2 when real JWT auth is implemented.
+ *
+ * In production: reads isAuthenticated() from the auth store to decide
+ * whether to show Auth flow or App tabs. React Navigation re-renders
+ * automatically when the store value changes.
  */
+
+// ⚠️  SPRINT 1 DEV ONLY — set to false to see the Login screen instead
+const DEV_SHOW_TABS = true;
+
 export function AppNavigator(): React.JSX.Element {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated());
 
+  // In dev mode, always show tabs so we can preview the full UI
+  const showTabs = DEV_SHOW_TABS || isAuthenticated;
+
   return (
     <RootStack.Navigator screenOptions={{ headerShown: false }}>
-      {isAuthenticated ? (
+      {showTabs ? (
         <RootStack.Screen name="App" component={AppTabNavigator} />
       ) : (
         <RootStack.Screen name="Auth" component={AuthNavigator} />

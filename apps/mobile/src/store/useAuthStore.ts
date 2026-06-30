@@ -1,15 +1,23 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import { createMMKV } from 'react-native-mmkv';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-/** Encrypted MMKV storage instance for persisting the auth session. */
-const mmkvStorage = createMMKV({ id: 'auth-store' });
-
-const zustandMMKVStorage = {
-  getItem: (name: string): string | null => mmkvStorage.getString(name) ?? null,
-  setItem: (name: string, value: string): void => { mmkvStorage.set(name, value); },
-  removeItem: (name: string): void => { mmkvStorage.remove(name); },
-};
+/**
+ * Storage adapter — uses AsyncStorage for Expo Go / web compatibility.
+ *
+ * NOTE FOR PRODUCTION:
+ * When you eject to a development build (Sprint 9), replace this with:
+ *
+ *   import { createMMKV } from 'react-native-mmkv';
+ *   const mmkv = createMMKV({ id: 'auth-store' });
+ *   const storage = {
+ *     getItem: (key) => mmkv.getString(key) ?? null,
+ *     setItem: (key, value) => mmkv.set(key, value),
+ *     removeItem: (key) => mmkv.remove(key),
+ *   };
+ *
+ * MMKV requires a native development build and cannot run inside Expo Go.
+ */
 
 // =============================================================================
 // TYPES
@@ -50,8 +58,8 @@ interface AuthActions {
 /**
  * useAuthStore — Zustand store for authentication session state.
  *
- * Persisted to encrypted MMKV so the user remains logged in across app restarts.
- * The access token is refreshed silently by the Axios interceptor (Sprint 2).
+ * Persisted to AsyncStorage (Expo Go compatible).
+ * Switches to encrypted MMKV in production development builds (Sprint 9).
  */
 export const useAuthStore = create<AuthState & AuthActions>()(
   persist(
@@ -86,7 +94,7 @@ export const useAuthStore = create<AuthState & AuthActions>()(
     }),
     {
       name: 'auth-session',
-      storage: createJSONStorage(() => zustandMMKVStorage),
+      storage: createJSONStorage(() => AsyncStorage),
       // Only persist the data fields — never persist the isRefreshing flag
       partialize: (state) => ({
         user: state.user,
